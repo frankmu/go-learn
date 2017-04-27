@@ -8,13 +8,18 @@ import (
 	"strconv"
 )
 
+type request struct {
+	isGet bool
+	key   string
+	value []byte
+}
 type keyValueServer struct {
-	value int
+	listener net.Listener
 }
 
 // New creates and returns (but does not start) a new KeyValueServer.
 func New() KeyValueServer {
-	return &keyValueServer{1}
+	return &keyValueServer{nil}
 }
 
 func (kvs *keyValueServer) Start(port int) error {
@@ -22,8 +27,9 @@ func (kvs *keyValueServer) Start(port int) error {
 	if err != nil {
 		return err
 	}
-	defer ln.Close()
+
 	fmt.Println("Listening on " + strconv.Itoa(port))
+	kvs.listener = ln
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -36,15 +42,14 @@ func (kvs *keyValueServer) Start(port int) error {
 }
 
 func (kvs *keyValueServer) Close() {
-	// TODO: implement this!
+	kvs.listener.Close()
 }
 
 func (kvs *keyValueServer) Count() int {
-	// TODO: implement this!
+
 	return -1
 }
 
-// TODO: add additional methods/functions below!
 func handleRequest(conn net.Conn) {
 	buf := make([]byte, 1024)
 	// Read the incoming connection into the buffer.
@@ -52,6 +57,7 @@ func handleRequest(conn net.Conn) {
 	if err != nil {
 		fmt.Println("Error reading:", err.Error())
 	}
+	fmt.Println(buf)
 	// Send a response back to person contacting us.
 	conn.Write([]byte("Message received."))
 	// Close the connection when you're done with it.
