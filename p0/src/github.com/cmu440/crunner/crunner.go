@@ -32,22 +32,26 @@ func main() {
 	go handleRead(conn, &wg)
 	wg.Wait()
 }
+
+// func handleWrite(conn net.Conn, wg *sync.WaitGroup) {
+// 	defer wg.Done()
+// 	_, e := conn.Write([]byte("put,hello,world\n"))
+// 	if e != nil {
+// 		fmt.Println("Error to send message because of ", e.Error())
+// 	}
+// }
+
 func handleWrite(conn net.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
-	for i := 1; i > 0; i-- {
-		_, e := conn.Write([]byte("hello " + strconv.Itoa(i) + "\r\n"))
-		if e != nil {
-			fmt.Println("Error to send message because of ", e.Error())
-			break
-		}
+	_, e := conn.Write([]byte("get,hello\n"))
+	if e != nil {
+		fmt.Println("Error to send message because of ", e.Error())
 	}
 }
 func handleRead(conn net.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
 	reader := bufio.NewReader(conn)
-	for i := 1; i <= 10; i++ {
-		line, _ := reader.ReadString(byte('\n'))
+	line, _ := reader.ReadString(byte('\n'))
 
-		fmt.Print(line)
-	}
+	fmt.Print(line)
 }

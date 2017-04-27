@@ -3,6 +3,8 @@
 package p0
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"net"
 	"strconv"
@@ -12,6 +14,9 @@ type request struct {
 	isGet bool
 	key   string
 	value []byte
+}
+type client struct {
+	connection net.Conn
 }
 type keyValueServer struct {
 	listener net.Listener
@@ -30,13 +35,15 @@ func (kvs *keyValueServer) Start(port int) error {
 
 	fmt.Println("Listening on " + strconv.Itoa(port))
 	kvs.listener = ln
+	init_db()
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			fmt.Println("Error accepting: ", err.Error())
 			return nil
 		}
-		go handleRequest(conn)
+		c := &client{conn}
+		go handleRequest(c)
 	}
 	return nil
 }
@@ -50,16 +57,27 @@ func (kvs *keyValueServer) Count() int {
 	return -1
 }
 
-func handleRequest(conn net.Conn) {
-	buf := make([]byte, 1024)
-	// Read the incoming connection into the buffer.
-	_, err := conn.Read(buf)
+func handleRequest(c *client) {
+	reader := bufio.NewReader(c.connection)
+	message, err := reader.ReadBytes('\n')
 	if err != nil {
 		fmt.Println("Error reading:", err.Error())
+		return
+	} else {
+		fmt.Println(string(message))
+		tokens := bytes.Split(message, []byte(","))
+		if string(tokens[0]) == "put" {
+			key := string(tokens[1])
+			value := string(tokens[2])
+			fmt.Println("put- " + key + ": " + value)
+			put(key, tokens[2])
+		} else {
+			k := tokens[1][:len(tokens[1])-1]
+			key := string(k)
+			fmt.Println("get- " + key + ": " + string(get(key)))
+			c.connection.Write(get(key))
+		}
 	}
-	fmt.Println(buf)
-	// Send a response back to person contacting us.
-	conn.Write([]byte("Message received."))
 	// Close the connection when you're done with it.
-	conn.Close()
+	c.connection.Close()
 }
