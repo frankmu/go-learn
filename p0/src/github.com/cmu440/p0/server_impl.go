@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 )
@@ -16,15 +17,36 @@ type request struct {
 	value []byte
 }
 type client struct {
-	connection net.Conn
+	connection       net.Conn
+	quitSignal_Write chan int
+	quitSignal_Read  chan int
 }
 type keyValueServer struct {
-	listener net.Listener
+	listener      net.Listener
+	clients       []*client
+	req           chan *request
+	res           chan *request
+	newConnection chan net.Conn
+	countClients  chan int
+	clientCount   chan int
+	deadClient    chan *client
+	quit_accept   chan int
+	quit_main     chan int
 }
 
 // New creates and returns (but does not start) a new KeyValueServer.
 func New() KeyValueServer {
-	return &keyValueServer{nil}
+	return &keyValueServer{
+		nil,
+		make([]*client, 0),
+		make(chan *request),
+		make(chan *request),
+		make(chan net.Conn),
+		make(chan int),
+		make(chan int),
+		make(chan *client),
+		make(chan int),
+		make(chan int)}
 }
 
 func (kvs *keyValueServer) Start(port int) error {
@@ -33,51 +55,121 @@ func (kvs *keyValueServer) Start(port int) error {
 		return err
 	}
 
-	fmt.Println("Listening on " + strconv.Itoa(port))
+	//fmt.Println("Listening on " + strconv.Itoa(port))
 	kvs.listener = ln
 	init_db()
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			fmt.Println("Error accepting: ", err.Error())
-			return nil
-		}
-		c := &client{conn}
-		go handleRequest(c)
-	}
+
+	go handleRoutine(kvs)
+	go handleAccept(kvs)
 	return nil
 }
 
 func (kvs *keyValueServer) Close() {
 	kvs.listener.Close()
+	kvs.quit_accept <- 0
+	kvs.quit_main <- 0
 }
 
 func (kvs *keyValueServer) Count() int {
-
-	return -1
+	//fmt.Println("Get Count")
+	kvs.countClients <- 0
+	count := <-kvs.clientCount
+	//fmt.Println(count)
+	return count
 }
 
-func handleRequest(c *client) {
-	reader := bufio.NewReader(c.connection)
-	message, err := reader.ReadBytes('\n')
-	if err != nil {
-		fmt.Println("Error reading:", err.Error())
-		return
-	} else {
-		fmt.Println(string(message))
-		tokens := bytes.Split(message, []byte(","))
-		if string(tokens[0]) == "put" {
-			key := string(tokens[1])
-			value := string(tokens[2])
-			fmt.Println("put- " + key + ": " + value)
-			put(key, tokens[2])
-		} else {
-			k := tokens[1][:len(tokens[1])-1]
-			key := string(k)
-			fmt.Println("get- " + key + ": " + string(get(key)))
-			c.connection.Write(get(key))
+func handleRoutine(kvs *keyValueServer) {
+	for {
+		select {
+		case <-kvs.quit_main:
+			for _, c := range kvs.clients {
+				c.connection.Close()
+				c.quitSignal_Write <- 0
+				c.quitSignal_Read <- 0
+			}
+			//fmt.Println("Quit Main")
+			return
+		case <-kvs.countClients:
+			kvs.clientCount <- len(kvs.clients)
+		case req := <-kvs.req:
+			if req.isGet {
+				v := get(req.key)
+				kvs.res <- &request{
+					value: v,
+				}
+			} else {
+				put(req.key, req.value)
+			}
+		case newConnection := <-kvs.newConnection:
+			c := &client{
+				newConnection,
+				make(chan int),
+				make(chan int)}
+			kvs.clients = append(kvs.clients, c)
+			//fmt.Println("new connection")
+			//fmt.Println(len(kvs.clients))
+			go handleRequest(kvs, c)
+		case <-kvs.deadClient:
+			//c.connection.Close()
+		}
+
+	}
+}
+func handleAccept(kvs *keyValueServer) {
+	for {
+		select {
+		case <-kvs.quit_accept:
+			//fmt.Println("Quit Accept")
+			return
+		default:
+			conn, err := kvs.listener.Accept()
+			if err == nil {
+				kvs.newConnection <- conn
+			}
 		}
 	}
+}
+
+func handleRequest(kvs *keyValueServer, c *client) {
+	reader := bufio.NewReader(c.connection)
+	for {
+		select {
+		case <-c.quitSignal_Read:
+			//fmt.Println("Quit Main")
+			return
+		default:
+			message, err := reader.ReadBytes('\n')
+			if err == io.EOF {
+				kvs.deadClient <- c
+			} else if err != nil {
+				fmt.Println("Error reading:", err.Error())
+				return
+			} else {
+				tokens := bytes.Split(message, []byte(","))
+				//fmt.Println("handle request: " + string(message))
+				if string(tokens[0]) == "put" {
+					key := string(tokens[1])
+					//value := string(tokens[2])
+					//fmt.Println("put- " + key + ": " + value)
+					kvs.req <- &request{
+						isGet: false,
+						key:   key,
+						value: tokens[2]}
+					//put(key, tokens[2])
+				} else {
+					k := tokens[1][:len(tokens[1])-1]
+					key := string(k)
+					//fmt.Println("get- " + key + ": " + string(get(key)))
+					kvs.req <- &request{
+						isGet: true,
+						key:   key}
+					response := <-kvs.res
+					c.connection.Write(append(append(k, ","...), response.value...))
+				}
+			}
+		}
+	}
+
 	// Close the connection when you're done with it.
-	c.connection.Close()
+	// c.connection.Close()
 }
