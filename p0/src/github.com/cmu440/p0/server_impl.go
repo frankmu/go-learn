@@ -5,7 +5,7 @@ package p0
 import (
 	"bufio"
 	"bytes"
-	"fmt"
+	//"fmt"
 	"io"
 	"net"
 	"strconv"
@@ -18,6 +18,8 @@ type request struct {
 }
 type client struct {
 	connection       net.Conn
+	id               int
+	messageQueue     chan []byte
 	quitSignal_Write chan int
 	quitSignal_Read  chan int
 }
@@ -26,6 +28,7 @@ type keyValueServer struct {
 	clients       []*client
 	req           chan *request
 	res           chan *request
+	newResponse   chan []byte
 	newConnection chan net.Conn
 	countClients  chan int
 	clientCount   chan int
@@ -41,6 +44,7 @@ func New() KeyValueServer {
 		make([]*client, 0),
 		make(chan *request),
 		make(chan *request),
+		make(chan []byte),
 		make(chan net.Conn),
 		make(chan int),
 		make(chan int),
@@ -79,6 +83,7 @@ func (kvs *keyValueServer) Count() int {
 }
 
 func handleRoutine(kvs *keyValueServer) {
+	counter := 0
 	for {
 		select {
 		case <-kvs.quit_main:
@@ -103,12 +108,20 @@ func handleRoutine(kvs *keyValueServer) {
 		case newConnection := <-kvs.newConnection:
 			c := &client{
 				newConnection,
+				counter,
+				make(chan []byte),
 				make(chan int),
 				make(chan int)}
 			kvs.clients = append(kvs.clients, c)
+			counter++
 			//fmt.Println("new connection")
 			//fmt.Println(len(kvs.clients))
 			go handleRequest(kvs, c)
+			go sendResponse(c)
+		case newResponse := <-kvs.newResponse:
+			for _, c := range kvs.clients {
+				c.messageQueue <- newResponse
+			}
 		case <-kvs.deadClient:
 			//c.connection.Close()
 		}
@@ -141,12 +154,9 @@ func handleRequest(kvs *keyValueServer, c *client) {
 			message, err := reader.ReadBytes('\n')
 			if err == io.EOF {
 				kvs.deadClient <- c
-			} else if err != nil {
-				fmt.Println("Error reading:", err.Error())
-				return
-			} else {
+			} else if err == nil {
 				tokens := bytes.Split(message, []byte(","))
-				//fmt.Println("handle request: " + string(message))
+				//fmt.Println(strconv.Itoa(c.id) + " - handle request: " + string(message))
 				if string(tokens[0]) == "put" {
 					key := string(tokens[1])
 					//value := string(tokens[2])
@@ -164,7 +174,7 @@ func handleRequest(kvs *keyValueServer, c *client) {
 						isGet: true,
 						key:   key}
 					response := <-kvs.res
-					c.connection.Write(append(append(k, ","...), response.value...))
+					kvs.newResponse <- append(append(k, ","...), response.value...)
 				}
 			}
 		}
@@ -172,4 +182,15 @@ func handleRequest(kvs *keyValueServer, c *client) {
 
 	// Close the connection when you're done with it.
 	// c.connection.Close()
+}
+func sendResponse(c *client) {
+	for {
+		select {
+		case <-c.quitSignal_Write:
+			//fmt.Println("Quit Main")
+			return
+		case message := <-c.messageQueue:
+			c.connection.Write(message)
+		}
+	}
 }
