@@ -37,6 +37,8 @@ type keyValueServer struct {
 	quit_main     chan int
 }
 
+const MAX_QUEUE_LEN = 800
+
 // New creates and returns (but does not start) a new KeyValueServer.
 func New() KeyValueServer {
 	return &keyValueServer{
@@ -109,7 +111,7 @@ func handleRoutine(kvs *keyValueServer) {
 			c := &client{
 				newConnection,
 				counter,
-				make(chan []byte),
+				make(chan []byte, MAX_QUEUE_LEN),
 				make(chan int),
 				make(chan int)}
 			kvs.clients = append(kvs.clients, c)
@@ -120,6 +122,9 @@ func handleRoutine(kvs *keyValueServer) {
 			go sendResponse(c)
 		case newResponse := <-kvs.newResponse:
 			for _, c := range kvs.clients {
+				if len(c.messageQueue) == MAX_QUEUE_LEN {
+					<-c.messageQueue
+				}
 				c.messageQueue <- newResponse
 			}
 		case deadClient := <-kvs.deadClient:
