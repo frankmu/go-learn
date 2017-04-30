@@ -122,8 +122,12 @@ func handleRoutine(kvs *keyValueServer) {
 			for _, c := range kvs.clients {
 				c.messageQueue <- newResponse
 			}
-		case <-kvs.deadClient:
-			//c.connection.Close()
+		case deadClient := <-kvs.deadClient:
+			for i, c := range kvs.clients {
+				if c == deadClient {
+					kvs.clients = append(kvs.clients[:i], kvs.clients[i+1:]...)
+				}
+			}
 		}
 
 	}
