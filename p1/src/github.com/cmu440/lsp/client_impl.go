@@ -2,10 +2,16 @@
 
 package lsp
 
-import "errors"
+import (
+	"encoding/json"
+	"fmt"
+	"github.com/cmu440/lspnet"
+)
 
 type client struct {
-	// TODO: implement this!
+	ConnectionID int
+	Connection   *lspnet.UDPConn
+	SeqNum       int
 }
 
 // NewClient creates, initiates, and returns a new client. This function
@@ -19,23 +25,53 @@ type client struct {
 // hostport is a colon-separated string identifying the server's host address
 // and port number (i.e., "localhost:9999").
 func NewClient(hostport string, params *Params) (Client, error) {
-	return nil, errors.New("not yet implemented")
+	udpAddr, _ := lspnet.ResolveUDPAddr("udp", hostport)
+	udpConn, _ := lspnet.DialUDP("udp", nil, udpAddr)
+	client := client{0, udpConn, 0}
+	connByteMessage, _ := json.Marshal(NewConnect())
+	client.Connection.Write(connByteMessage)
+	ackMessage, _ := client.Read()
+
+	var ack Message
+	json.Unmarshal(ackMessage, &ack)
+	client.ConnectionID = ack.ConnID
+	return &client, nil
 }
 
 func (c *client) ConnID() int {
-	return -1
+	return c.ConnectionID
 }
 
 func (c *client) Read() ([]byte, error) {
-	// TODO: remove this line when you are ready to begin implementing this method.
-	select {} // Blocks indefinitely.
-	return nil, errors.New("not yet implemented")
+	for {
+		buffer := make([]byte, 1000)
+		length, _ := c.Connection.Read(buffer)
+		var msg Message
+		json.Unmarshal(buffer[:length], &msg)
+		switch msgType := msg.Type; msgType {
+		case MsgAck:
+			fmt.Println("Recieved ACK")
+			if c.SeqNum == 0 {
+				return buffer[:length], nil
+			}
+		case MsgData:
+			fmt.Println("Recieved DATA", msg)
+			ackByteMessage, _ := json.Marshal(NewAck(msg.ConnID, msg.SeqNum))
+			c.Connection.Write(ackByteMessage)
+			return msg.Payload, nil
+		default:
+			fmt.Println("Default")
+		}
+	}
 }
 
 func (c *client) Write(payload []byte) error {
-	return errors.New("not yet implemented")
+	c.SeqNum++
+	byteMessage, _ := json.Marshal(NewData(c.ConnID(), c.SeqNum, len(payload), payload))
+	_, err := c.Connection.Write(byteMessage)
+	return err
 }
 
 func (c *client) Close() error {
-	return errors.New("not yet implemented")
+	return c.Connection.Close()
 }
