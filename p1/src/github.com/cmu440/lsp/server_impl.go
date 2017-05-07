@@ -53,13 +53,14 @@ func (s *server) Read() (int, []byte, error) {
 }
 
 func (s *server) Write(connID int, payload []byte) error {
-	client, exists := s.clients[connID]
-	if exists {
-		byteMessage, _ := json.Marshal(NewData(connID, client.SeqNum, len(payload), payload))
-		_, err := s.Connection.WriteToUDP(byteMessage, client.Addr)
-		return err
-	}
-	return errors.New("Not connected yet")
+	go func(connID int, payload []byte) {
+		client, exists := s.clients[connID]
+		if exists {
+			byteMessage, _ := json.Marshal(NewData(connID, client.SeqNum, len(payload), payload))
+			s.Connection.WriteToUDP(byteMessage, client.Addr)
+		}
+	}(connID, payload)
+	return nil
 }
 
 func (s *server) CloseConn(connID int) error {
