@@ -50,12 +50,10 @@ func (c *client) Read() ([]byte, error) {
 		json.Unmarshal(buffer[:length], &msg)
 		switch msgType := msg.Type; msgType {
 		case MsgAck:
-			fmt.Println("Recieved ACK")
 			if c.SeqNum == 0 {
 				return buffer[:length], nil
 			}
 		case MsgData:
-			fmt.Println("Recieved DATA", msg)
 			ackByteMessage, _ := json.Marshal(NewAck(msg.ConnID, msg.SeqNum))
 			c.Connection.Write(ackByteMessage)
 			return msg.Payload, nil
