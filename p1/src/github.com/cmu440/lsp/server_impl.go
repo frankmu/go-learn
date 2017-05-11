@@ -16,12 +16,13 @@ type clientConnection struct {
 }
 
 type server struct {
-	Connection    *lspnet.UDPConn
-	clients       map[int]*clientConnection
-	addrMap       map[string]int
-	ConnectionNum int
-	messageQueue  chan *Message
-	newClient     chan *lspnet.UDPAddr
+	Connection        *lspnet.UDPConn
+	clients           map[int]*clientConnection
+	addrMap           map[string]int
+	ConnectionNum     int
+	readMessageQueue  chan *Message
+	writeMessageQueue chan *Message
+	newClient         chan *lspnet.UDPAddr
 }
 
 // NewServer creates, initiates, and returns a new server. This function should
@@ -39,6 +40,7 @@ func NewServer(port int, params *Params) (Server, error) {
 		make(map[string]int),
 		1,
 		make(chan *Message),
+		make(chan *Message),
 		make(chan *lspnet.UDPAddr),
 	}
 	fmt.Println("Server started", lspnet.JoinHostPort("localhost", strconv.Itoa(port)))
@@ -48,18 +50,15 @@ func NewServer(port int, params *Params) (Server, error) {
 }
 
 func (s *server) Read() (int, []byte, error) {
-	message := <-s.messageQueue
+	message := <-s.readMessageQueue
 	return message.ConnID, message.Payload, nil
 }
 
 func (s *server) Write(connID int, payload []byte) error {
-	go func(connID int, payload []byte) {
-		client, exists := s.clients[connID]
-		if exists {
-			byteMessage, _ := json.Marshal(NewData(connID, client.SeqNum, len(payload), payload))
-			s.Connection.WriteToUDP(byteMessage, client.Addr)
-		}
-	}(connID, payload)
+	client, exists := s.clients[connID]
+	if exists {
+		s.writeMessageQueue <- NewData(connID, client.SeqNum, len(payload), payload)
+	}
 	return nil
 }
 
@@ -81,10 +80,14 @@ func handleAccept(s *server) {
 			json.Unmarshal(buffer[:length], &msg)
 			switch msgType := msg.Type; msgType {
 			case MsgAck:
+				client, existed := s.clients[msg.ConnID]
+				if existed {
+					client.SeqNum = msg.SeqNum + 1
+				}
 			case MsgData:
 				ack, _ := json.Marshal(NewAck(msg.ConnID, msg.SeqNum))
 				s.Connection.WriteToUDP(ack, addr)
-				s.messageQueue <- &msg
+				s.readMessageQueue <- &msg
 			case MsgConnect:
 				s.newClient <- addr
 			}
@@ -108,6 +111,10 @@ func handleRoutine(s *server) {
 				s.ConnectionNum++
 				s.Connection.WriteToUDP(ack, addr)
 			}
+		case msg := <-s.writeMessageQueue:
+			client := s.clients[msg.ConnID]
+			byteMessage, _ := json.Marshal(msg)
+			s.Connection.WriteToUDP(byteMessage, client.Addr)
 		default:
 
 		}
