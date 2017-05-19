@@ -3,38 +3,47 @@
 package lsp
 
 import (
+	"container/list"
 	"encoding/json"
 	"fmt"
 	"github.com/cmu440/lspnet"
 )
 
 type client struct {
-	ConnectionID int
-	Connection   *lspnet.UDPConn
-	SeqNum       int
+	ConnectionID        int
+	Connection          *lspnet.UDPConn
+	SeqNum              int
+	WindowSize          int
+	SendSeqNum          int
+	SendWindow          []bool
+	SendBuffer          *list.List
+	WriteMessageChannel chan *Message
+	AckMessageChannel   chan *Message
+	ReadMessageChannel  chan *Message
 }
 
-// NewClient creates, initiates, and returns a new client. This function
-// should return after a connection with the server has been established
-// (i.e., the client has received an Ack message from the server in response
-// to its connection request), and should return a non-nil error if a
-// connection could not be made (i.e., if after K epochs, the client still
-// hasn't received an Ack message from the server in response to its K
-// connection requests).
-//
-// hostport is a colon-separated string identifying the server's host address
-// and port number (i.e., "localhost:9999").
 func NewClient(hostport string, params *Params) (Client, error) {
 	udpAddr, _ := lspnet.ResolveUDPAddr("udp", hostport)
 	udpConn, _ := lspnet.DialUDP("udp", nil, udpAddr)
-	client := client{0, udpConn, 0}
+	client := client{
+		0,
+		udpConn,
+		0,
+		params.WindowSize,
+		0,
+		make([]bool, params.WindowSize),
+		list.New(),
+		make(chan *Message),
+		make(chan *Message),
+		make(chan *Message),
+	}
+
+	go client.mainRoutine()
+	go client.readRoutine()
 	connByteMessage, _ := json.Marshal(NewConnect())
 	client.Connection.Write(connByteMessage)
-	ackMessage, _ := client.Read()
+	client.Read()
 
-	var ack Message
-	json.Unmarshal(ackMessage, &ack)
-	client.ConnectionID = ack.ConnID
 	return &client, nil
 }
 
@@ -43,33 +52,81 @@ func (c *client) ConnID() int {
 }
 
 func (c *client) Read() ([]byte, error) {
-	for {
-		buffer := make([]byte, 1000)
-		length, _ := c.Connection.Read(buffer)
-		var msg Message
-		json.Unmarshal(buffer[:length], &msg)
-		switch msgType := msg.Type; msgType {
-		case MsgAck:
-			if c.SeqNum == 0 {
-				return buffer[:length], nil
-			}
-		case MsgData:
-			ackByteMessage, _ := json.Marshal(NewAck(msg.ConnID, msg.SeqNum))
-			c.Connection.Write(ackByteMessage)
-			return msg.Payload, nil
-		default:
-			fmt.Println("Default")
-		}
-	}
+	msg := <-c.ReadMessageChannel
+	return msg.Payload, nil
 }
 
 func (c *client) Write(payload []byte) error {
+	c.WriteMessageChannel <- NewData(c.ConnID(), c.SeqNum, len(payload), payload)
 	c.SeqNum++
-	byteMessage, _ := json.Marshal(NewData(c.ConnID(), c.SeqNum, len(payload), payload))
-	_, err := c.Connection.Write(byteMessage)
-	return err
+	return nil
 }
 
 func (c *client) Close() error {
 	return c.Connection.Close()
+}
+
+func (c *client) mainRoutine() {
+	for {
+		select {
+		case writeMessage := <-c.WriteMessageChannel:
+			if writeMessage.Type == MsgAck {
+				byteMessage, _ := json.Marshal(writeMessage)
+				c.Connection.Write(byteMessage)
+			} else {
+				if writeMessage.SeqNum > c.SendSeqNum && writeMessage.SeqNum <= c.SendSeqNum+c.WindowSize {
+					byteMessage, _ := json.Marshal(writeMessage)
+					c.Connection.Write(byteMessage)
+					c.SendWindow[writeMessage.SeqNum-c.SendSeqNum-1] = false
+				} else {
+					c.SendBuffer.PushBack(writeMessage)
+				}
+			}
+		case ackMessage := <-c.AckMessageChannel:
+			if ackMessage.SeqNum == 0 {
+				c.ConnectionID = ackMessage.ConnID
+				c.SeqNum++
+			} else if ackMessage.SeqNum > c.SendSeqNum {
+				c.SendWindow[ackMessage.SeqNum%c.WindowSize] = true
+				for index := c.SendSeqNum % c.WindowSize; index < c.WindowSize; index++ {
+					if c.SendWindow[index] == true {
+						if e := c.SendBuffer.Front(); e != nil {
+							byteMessage, _ := json.Marshal(e.Value.(*Message))
+							c.Connection.Write(byteMessage)
+							c.SendWindow[index] = false
+							c.SendBuffer.Remove(e)
+						}
+						c.SendSeqNum++
+					} else {
+						break
+					}
+				}
+
+			}
+		}
+	}
+}
+
+func (c *client) readRoutine() {
+	for {
+		select {
+		default:
+			buffer := make([]byte, 1000)
+			length, _ := c.Connection.Read(buffer)
+			var msg Message
+			json.Unmarshal(buffer[:length], &msg)
+			switch msgType := msg.Type; msgType {
+			case MsgAck:
+				c.AckMessageChannel <- &msg
+				if msg.SeqNum == 0 {
+					c.ReadMessageChannel <- &msg
+				}
+			case MsgData:
+				c.WriteMessageChannel <- NewAck(msg.ConnID, msg.SeqNum)
+				c.ReadMessageChannel <- &msg
+			default:
+				fmt.Println("Default")
+			}
+		}
+	}
 }
